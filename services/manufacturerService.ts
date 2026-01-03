@@ -1,6 +1,7 @@
 import { supabase } from './supabaseClient';
 import { CabinetLine, CatalogueFile } from '../types';
 import { PRICING_DB, DEMO_LINES } from './mockData';
+import * as XLSX from 'xlsx';
 
 export const ManufacturerService = {
     // Fetch all lines. If DB is empty or fails, fallback to Mock.
@@ -10,7 +11,7 @@ export const ManufacturerService = {
             
             if (error) {
                 console.error("Supabase Error (getLines):", error.message);
-                // Return empty if table doesn't exist so we don't confuse with mock data if intention is empty
+                // Return empty if table doesn't exist
                 if (error.code === '42P01') return DEMO_LINES; 
                 return DEMO_LINES;
             }
@@ -59,9 +60,6 @@ export const ManufacturerService = {
                     dbPricing[item.line_id] = {};
                 }
                 
-                // IMPORTANT: Use the 'type' column as the primary key for the dictionary.
-                // In savePricing, we store the dictionary key (SKU or 'default') into the 'type' column.
-                // This ensures that 'default' key is preserved and not overwritten by the SKU value.
                 const key = item.type || item.sku; 
                 
                 dbPricing[item.line_id][key] = {
@@ -117,7 +115,6 @@ export const ManufacturerService = {
             const bucketName = 'manufacturer-assets';
             const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
             const fileName = `${lineId}/${Date.now()}_${cleanName}`;
-            const FILE_SIZE_LIMIT = 1073741824; 
 
             // 1. Upload
             const { data, error } = await supabase.storage
@@ -129,9 +126,6 @@ export const ManufacturerService = {
 
             if (error) {
                 console.warn(`Upload failed:`, error.message);
-                if (error.message.includes("Bucket not found")) {
-                     console.error("Storage Bucket missing. Run Migration SQL.");
-                }
                 return null;
             }
 
@@ -168,8 +162,6 @@ export const ManufacturerService = {
     async removeCatalogFile(lineId: string, type: 'excel' | 'pdf' | 'nkba'): Promise<boolean> {
         try {
             if (lineId === 'global') {
-                // For global files, we assume frontend state is truth for now as we don't have a settings table
-                // In a real app, this would delete from a 'settings' table
                 return true;
             }
             
@@ -192,12 +184,7 @@ export const ManufacturerService = {
             reader.onload = (e) => {
                 try {
                     const data = e.target?.result;
-                    const XLSX = (window as any).XLSX;
-                    if (!XLSX) {
-                        resolve({}); 
-                        return;
-                    }
-
+                    // Use XLSX from import
                     const workbook = XLSX.read(data, { type: 'binary' });
                     const firstSheetName = workbook.SheetNames[0];
                     const worksheet = workbook.Sheets[firstSheetName];
@@ -205,18 +192,15 @@ export const ManufacturerService = {
 
                     const pricingMap: Record<string, { sku: string; price: number }> = {};
                     
-                    // Candidate Headers (Case insensitive partial match logic later)
                     const skuCandidates = ['SKU', 'Item', 'Code', 'Model', 'Product', 'Part No', 'Part'];
                     const priceCandidates = ['Price', 'Cost', 'MSRP', 'List Price', 'Amount', 'Net Price', 'Unit Price'];
 
-                    // Helper to find value from dynamic key
                     const findValue = (row: any, candidates: string[]) => {
                         const keys = Object.keys(row);
                         for (const c of candidates) {
                             const exact = keys.find(k => k.trim().toLowerCase() === c.toLowerCase());
                             if (exact) return row[exact];
                         }
-                        // If no exact match, try partial
                         for (const c of candidates) {
                             const partial = keys.find(k => k.trim().toLowerCase().includes(c.toLowerCase()));
                             if (partial) return row[partial];
@@ -229,13 +213,11 @@ export const ManufacturerService = {
                         let priceStr = findValue(row, priceCandidates);
                         
                         if (sku && priceStr !== undefined && priceStr !== null) {
-                            // Clean price string (remove $, spaces, etc)
                             if (typeof priceStr === 'string') {
                                 priceStr = priceStr.replace(/[^0-9.]/g, '');
                             }
                             const price = parseFloat(priceStr);
 
-                            // Only add if we have a valid price and sku
                             if (!isNaN(price) && sku.toString().trim().length > 0) {
                                 const cleanSku = String(sku).trim().toUpperCase();
                                 pricingMap[cleanSku] = { sku: cleanSku, price };
@@ -259,13 +241,12 @@ export const ManufacturerService = {
         try {
             const rows = Object.entries(pricingData).map(([key, data]) => ({
                 line_id: lineId,
-                type: key, // Storing the dictionary key (e.g. 'default' or 'B30') as 'type'
+                type: key,
                 sku: data.sku,
                 price: data.price
             }));
 
             await supabase.from('pricing_items').delete().eq('line_id', lineId);
-            // Insert in batches if large, but for demo direct insert is fine
             const { error } = await supabase.from('pricing_items').insert(rows);
             
             if (error) {
