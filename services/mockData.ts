@@ -1,5 +1,5 @@
 
-import { CabinetLine } from '../types';
+import { CabinetLine, ProjectInfo } from '../types';
 
 export const DEMO_LINES: CabinetLine[] = [
     {
@@ -10,7 +10,45 @@ export const DEMO_LINES: CabinetLine[] = [
         finish: 'White Melamine',
         multiplier: 1.0,
         finishPremium: 0,
-        shippingFactor: 0.05
+        shippingFactor: 0.05,
+        rates: {
+            basePerFoot: 180,
+            wallPerFoot: 140,
+            tallPerUnit: 650,
+            accessoryPerFoot: 50
+        }
+    },
+    {
+        id: 'line_classic',
+        name: 'Classic Shaker',
+        tier: 'Mid-Range',
+        description: 'Plywood construction, painted finish.',
+        finish: 'Painted White',
+        multiplier: 1.65,
+        finishPremium: 0.10,
+        shippingFactor: 0.07,
+        rates: {
+            basePerFoot: 280,
+            wallPerFoot: 220,
+            tallPerUnit: 950,
+            accessoryPerFoot: 80
+        }
+    },
+    {
+        id: 'line_artisan',
+        name: 'Artisan Custom',
+        tier: 'Premium',
+        description: 'Solid wood, custom stains, full overlay.',
+        finish: 'Custom Stain',
+        multiplier: 2.8,
+        finishPremium: 0.25,
+        shippingFactor: 0.10,
+        rates: {
+            basePerFoot: 450,
+            wallPerFoot: 380,
+            tallPerUnit: 1400,
+            accessoryPerFoot: 120
+        }
     }
 ];
 
@@ -41,13 +79,26 @@ export const PRICING_DB: Record<string, Record<string, { sku: string; price: num
     }
 };
 
-export const MOCK_PROJECT_DEFAULTS = {
-    dealerName: "KABS DEALER INC.",
-    dealerAddress: "123 Design District, San Francisco, CA 94103",
-    dealerPhone: "(555) 123-4567",
-    clientName: "Jane Doe",
-    projectName: "Sunnyvale Kitchen Remodel",
-    address: "450 Enterprise Way, Sunnyvale, CA",
+export const MOCK_PROJECT_DEFAULTS: ProjectInfo = {
+    dealerName: "Elite Building Solutions",
+    dealerAddress: "950 Charles St #100, Longwood, FL 32750",
+    dealerPhone: "407-331-1858",
+    dealerEmail: "orders@elitebuilding.com",
+    clientName: "Reagan Sharpe",
+    projectName: "894 Pine Ave",
+    address: "295 Geneva Drive, Oviedo, FL 32765",
+    email: "reagan@kochcabinet.com",
+    phone: "407-555-0123",
     date: new Date().toLocaleDateString(),
-    manufacturerName: "Builder Series"
+    manufacturerName: "Midland Cabinetry",
+    specs: {
+        doorStyle: "Pioneer/Pioneer",
+        woodSpecies: "Paint Grade-HD",
+        stainColor: "Oyster",
+        glaze: "None",
+        drawerBox: "BLUMSC-7/8",
+        hinges: "Soft Close",
+        poNumber: "894 Pine Ave",
+        soNumber: "947161"
+    }
 };

@@ -44,12 +44,6 @@ export default function App() {
     // Initial Load from Supabase & Auth Check
     useEffect(() => {
         const loadData = async () => {
-            // 1. Check Auth Persistence
-            if (AuthService.isAuthenticated()) {
-                console.log("Restoring Admin Session...");
-                setState(prev => ({ ...prev, step: 'admin-dashboard' }));
-            }
-
             // 2. Load Data from Supabase
             const lines = await ManufacturerService.getLines();
             const pricing = await ManufacturerService.getAllPricing();
@@ -77,14 +71,14 @@ export default function App() {
         // Optimize: Compress images before sending to AI
         const processFile = async (): Promise<string> => {
             return new Promise((resolve) => {
-                // If it's an image, resize it to max 1500px width/height to speed up upload/AI processing
+                // If it's an image, resize it to max 3072px (3K) width/height to ensure text readability
                 if (file.type.startsWith('image/')) {
                     const reader = new FileReader();
                     reader.onload = (event) => {
                         const img = new Image();
                         img.src = event.target?.result as string;
                         img.onload = () => {
-                            const MAX_DIM = 1500;
+                            const MAX_DIM = 3072; // Increased from 1500 to capture small text
                             let width = img.width;
                             let height = img.height;
 
@@ -96,10 +90,6 @@ export default function App() {
                                     width *= MAX_DIM / height;
                                     height = MAX_DIM;
                                 }
-                            } else {
-                                // No resize needed
-                                resolve(event.target?.result as string);
-                                return;
                             }
 
                             const canvas = document.createElement('canvas');
@@ -108,8 +98,8 @@ export default function App() {
                             const ctx = canvas.getContext('2d');
                             if (ctx) {
                                 ctx.drawImage(img, 0, 0, width, height);
-                                // Compress to JPEG 80%
-                                resolve(canvas.toDataURL('image/jpeg', 0.8));
+                                // Compress to JPEG 85% for better quality/size balance
+                                resolve(canvas.toDataURL('image/jpeg', 0.85));
                             } else {
                                 resolve(event.target?.result as string);
                             }
@@ -117,7 +107,7 @@ export default function App() {
                     };
                     reader.readAsDataURL(file);
                 } else {
-                    // For PDF, we must read as DataURL directly (no client-side compression easily available)
+                    // For PDF, we must read as DataURL directly
                     const reader = new FileReader();
                     reader.onloadend = () => resolve(reader.result as string);
                     reader.readAsDataURL(file);
@@ -161,11 +151,12 @@ export default function App() {
                 id: `bom-${Date.now()}-${idx}`
             }));
 
-            // 4. Strict Validation against Selected Catalog
+            // 4. Strict Validation against Selected Catalog & Size Based Pricing
             const activeLineId = state.selectedLineId;
+            const activeLine = state.lines.find(l => l.id === activeLineId);
             const pricingDB = state.pricingDatabase[activeLineId] || {};
             
-            const validatedBom = validateBOMAgainstCatalog(bomWithIds, pricingDB);
+            const validatedBom = validateBOMAgainstCatalog(bomWithIds, pricingDB, activeLine);
             
             setState(prev => ({ 
                 ...prev, 

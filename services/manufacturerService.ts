@@ -1,7 +1,6 @@
 import { supabase } from './supabaseClient';
 import { CabinetLine, CatalogueFile } from '../types';
 import { PRICING_DB, DEMO_LINES } from './mockData';
-import * as XLSX from 'xlsx';
 
 export const ManufacturerService = {
     // Fetch all lines. If DB is empty or fails, fallback to Mock.
@@ -9,15 +8,10 @@ export const ManufacturerService = {
         try {
             const { data, error } = await supabase.from('cabinet_lines').select('*');
             
-            if (error) {
-                console.error("Supabase Error (getLines):", error.message);
-                // Return empty if table doesn't exist
-                if (error.code === '42P01') return DEMO_LINES; 
-                return DEMO_LINES;
-            }
+            // Explicitly throw on error to hit the catch block
+            if (error) throw error;
             
             if (!data || data.length === 0) {
-                console.log("DB empty, using Mock Lines");
                 return DEMO_LINES;
             }
 
@@ -34,7 +28,7 @@ export const ManufacturerService = {
                 guidelinesPdf: row.guidelines_pdf
             }));
         } catch (e) {
-            console.error("Supabase Connection Error:", e);
+            // Silent fallback for "Failed to fetch" or DB errors
             return DEMO_LINES;
         }
     },
@@ -44,10 +38,7 @@ export const ManufacturerService = {
         try {
             const { data, error } = await supabase.from('pricing_items').select('*');
             
-            if (error) {
-                console.error("Supabase Error (getAllPricing):", error.message);
-                return PRICING_DB;
-            }
+            if (error) throw error;
 
             if (!data || data.length === 0) {
                 return PRICING_DB;
@@ -60,6 +51,7 @@ export const ManufacturerService = {
                     dbPricing[item.line_id] = {};
                 }
                 
+                // IMPORTANT: Use the 'type' column as the primary key for the dictionary.
                 const key = item.type || item.sku; 
                 
                 dbPricing[item.line_id][key] = {
@@ -70,7 +62,7 @@ export const ManufacturerService = {
             
             return { ...PRICING_DB, ...dbPricing };
         } catch (e) {
-            console.error("Supabase Pricing Error:", e);
+            // Silent fallback
             return PRICING_DB;
         }
     },
@@ -88,13 +80,9 @@ export const ManufacturerService = {
                 shipping_factor: line.shippingFactor
             }]);
             
-            if (error) {
-                 console.error("Supabase Insert Error:", error);
-                 return false; 
-            }
+            if (error) return false;
             return true;
         } catch (e) {
-            console.error("Error adding line to DB", e);
             return false;
         }
     },
@@ -105,7 +93,6 @@ export const ManufacturerService = {
             await supabase.from('cabinet_lines').delete().eq('id', lineId);
             return true;
         } catch (e) {
-            console.error("Delete line error", e);
             return false;
         }
     },
@@ -117,17 +104,14 @@ export const ManufacturerService = {
             const fileName = `${lineId}/${Date.now()}_${cleanName}`;
 
             // 1. Upload
-            const { data, error } = await supabase.storage
+            const { error } = await supabase.storage
                 .from(bucketName)
                 .upload(fileName, file, { 
                     upsert: true,
                     contentType: file.type || 'application/octet-stream'
                 });
 
-            if (error) {
-                console.warn(`Upload failed:`, error.message);
-                return null;
-            }
+            if (error) return null;
 
             // 2. Construct File Entry
             const fileEntry: CatalogueFile = {
@@ -145,25 +129,19 @@ export const ManufacturerService = {
                     .update({ [field]: fileEntry })
                     .eq('id', lineId);
                 
-                if (dbError) {
-                    console.error("DB Update Failed during Upload:", dbError.message);
-                    return null;
-                }
+                if (dbError) return null;
             }
 
             return fileEntry;
 
         } catch (e) {
-            console.error("Unexpected Upload Error", e);
             return null;
         }
     },
 
     async removeCatalogFile(lineId: string, type: 'excel' | 'pdf' | 'nkba'): Promise<boolean> {
         try {
-            if (lineId === 'global') {
-                return true;
-            }
+            if (lineId === 'global') return true;
             
             const field = type === 'excel' ? 'catalog_excel' : 'guidelines_pdf';
             await supabase
@@ -172,19 +150,23 @@ export const ManufacturerService = {
                 .eq('id', lineId);
             return true;
         } catch (e) {
-            console.error("Remove file error", e);
             return false;
         }
     },
 
     async parseCatalogExcel(file: File): Promise<Record<string, { sku: string; price: number }>> {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             const reader = new FileReader();
             
             reader.onload = (e) => {
                 try {
                     const data = e.target?.result;
-                    // Use XLSX from import
+                    const XLSX = (window as any).XLSX;
+                    if (!XLSX) {
+                        resolve({}); 
+                        return;
+                    }
+
                     const workbook = XLSX.read(data, { type: 'binary' });
                     const firstSheetName = workbook.SheetNames[0];
                     const worksheet = workbook.Sheets[firstSheetName];
@@ -225,11 +207,9 @@ export const ManufacturerService = {
                         }
                     });
                     
-                    console.log(`Parsed ${Object.keys(pricingMap).length} items from Excel.`);
                     resolve(pricingMap);
 
                 } catch (error) {
-                    console.error("Excel Parsing Error", error);
                     resolve({});
                 }
             };
@@ -247,13 +227,9 @@ export const ManufacturerService = {
             }));
 
             await supabase.from('pricing_items').delete().eq('line_id', lineId);
-            const { error } = await supabase.from('pricing_items').insert(rows);
-            
-            if (error) {
-                console.error("Supabase pricing insert failed:", error.message);
-            }
+            await supabase.from('pricing_items').insert(rows);
         } catch (e) {
-            console.error("Could not save pricing to DB", e);
+            // Ignore error
         }
     }
 };
