@@ -1,45 +1,75 @@
-
 import { CABINET_LINES, MASTER_CATALOG } from '../constants';
 import { QuoteItem, CabinetLine, BOMItem, CabinetDimensions, CabinetType, CatalogItem } from '../types';
 
 /**
- * Normalizes SKU strings to find matches in the catalog.
+ * Normalizes SKU strings to strictly follow NKBA naming conventions (e.g. B30, W3030).
+ * This acts as the bridge between raw drawing text and the Pricing Database.
+ * 
+ * NKBA RULES:
+ * - Base: B[Width] (e.g., B30)
+ * - Wall: W[Width][Height] (e.g., W3030)
+ * - Tall: U[Width][Height] (e.g., U1884)
+ * - Sink: SB[Width]
+ * - Drawer: DB[Width]
  */
 export const normalizeSku = (input: string): string => {
     if (!input) return "";
 
     let s = input.toUpperCase().trim();
 
-    // 0. Pre-process Full Words
-    s = s.replace(/\bBASE\b/g, 'B');
-    s = s.replace(/\bWALL\b/g, 'W');
-    s = s.replace(/\bTALL\b/g, 'T');
-    s = s.replace(/\bVANITY\b/g, 'V');
-    s = s.replace(/\bDRAWER\b/g, 'DB');
-    s = s.replace(/\bSINK\b/g, 'SB');
+    // 1. Clean common delimiters and dimension markers
+    s = s.replace(/["']|INCH|IN/g, ''); // Remove inch markers
+    s = s.replace(/[\.\-\,\_]/g, ' '); // Replace separators with space
+    
+    // 2. Map Verbose Types to NKBA Prefixes
+    const typeMap: [RegExp, string][] = [
+        // Specific Types first
+        [/\b(SINK BASE|SB|SINK)\b/g, 'SB'],
+        [/\b(DRAWER BASE|DB|DRAWER BANK|DRAWERS|DRAWER)\b/g, 'DB'],
+        [/\b(LAZY SUSAN|LS|CORNER BASE|CB)\b/g, 'LS'],
+        [/\b(BLIND CORNER|BC|BBC)\b/g, 'BBC'],
+        [/\b(WALL DIAGONAL|WDC|DIAGONAL CORNER|DC)\b/g, 'WDC'],
+        [/\b(UTILITY|TALL|PANTRY|OVEN CABINET|OVEN)\b/g, 'U'],
+        [/\b(REFRIGERATOR RETURN|REF RETURN|RR)\b/g, 'RR'],
+        
+        // Fillers & Accessories
+        [/\b(BASE FILLER|BF)\b/g, 'BF'],
+        [/\b(WALL FILLER|WF)\b/g, 'WF'],
+        [/\b(TALL FILLER|TF)\b/g, 'TF'],
+        [/\b(TOE KICK|TK)\b/g, 'TK'],
+        [/\b(CROWN MOLDING|CROWN|CM)\b/g, 'CM'],
+        [/\b(SCRIBE|SM)\b/g, 'SM'],
+        [/\b(QUARTER ROUND|QR)\b/g, 'QR'],
+        [/\b(DISHWASHER PANEL|DWP)\b/g, 'DWP'],
+        [/\b(REFRIGERATOR PANEL|FRIDGE PANEL|REP)\b/g, 'REP'],
+        
+        // Generic Types (Last to avoid overwriting specifics)
+        [/\b(BASE CABINET|BASE)\b/g, 'B'],
+        [/\b(WALL CABINET|WALL|UPPER)\b/g, 'W'],
+        [/\b(VANITY)\b/g, 'V'],
+    ];
 
-    // 1. Remove " X 24 DP" and similar depth modifications
-    s = s.replace(/\s*X\s*\d+\s*DP/g, ''); 
-    s = s.replace(/\s*\d+\s*DP/g, '');
-
-    // 2. Remove Quantity/Tag suffixes
-    s = s.replace(/[-.]\d+$/, ''); 
-
-    // 3. Remove Orientation
-    s = s.replace(/-\d+[LR]$/, ''); 
-    s = s.replace(/-\d+$/, ''); 
-    s = s.replace(/[- ]?[LR]$/, ''); 
-
-    // 4. Handle embedded configuration patterns
-    s = s.replace(/\d+D\d+B/, ''); 
-
-    // 5. Remove Specific Options
-    const optionsToRemove = ['BUTT', 'ET', 'AO', '1TD', '2TD', '3TD', '4DXROT', 'ROT', 'VAL', 'TK', 'CM', 'DEP', 'WF'];
-    optionsToRemove.forEach(opt => {
-        s = s.replace(new RegExp(`\\.?${opt}\\.?`, 'g'), '');
+    typeMap.forEach(([regex, prefix]) => {
+        s = s.replace(regex, prefix);
     });
 
-    // Remove non-alphanumeric chars (spaces, hyphens) to normalize B 30 -> B30
+    // 3. Handle Reversed Syntax: "30 B" -> "B 30"
+    // Matches "30" followed by "B" or other prefix
+    const numPrefixMatch = s.match(/^(\d{2,3})\s*([A-Z]{1,3})\b/);
+    if (numPrefixMatch) {
+        // Swap to Prefix Number
+        s = s.replace(numPrefixMatch[0], `${numPrefixMatch[2]}${numPrefixMatch[1]}`);
+    }
+
+    // 4. Remove Noise (1951 or Drawing specifics)
+    s = s.replace(/\b(BUTT|L|R|HINGE|LEFT|RIGHT|STD)\b/g, ''); 
+    
+    // 5. Remove Depth Info (Implicit in NKBA standard codes unless non-standard)
+    // Matches "X 24 D", "24 DP", "24 DEPTH"
+    s = s.replace(/\s*[X]?\s*\d{1,2}\.?\d*\s*(D|DP|DEPTH)\b/g, '');
+
+    // 6. Final Cleanup: Remove spaces and non-alphanumeric chars
+    // "B 30" -> "B30"
     s = s.replace(/[^A-Z0-9]/g, '');
     
     return s;
@@ -64,8 +94,8 @@ export const parseCabinetDimensions = (rawCode: string): CabinetDimensions | nul
         };
     }
 
-    // 2. Base Cabinets (B + Width) e.g. B18
-    const baseMatch = code.match(/^(B|SB|DB|BBC|LS|BC)(\d{2})$/);
+    // 2. Base Cabinets (B + Width) e.g. B18, PB36
+    const baseMatch = code.match(/^(B|SB|DB|BBC|LS|BC|PB)(\d{2})/); // Added PB
     if (baseMatch) {
         return {
             type: CabinetType.BASE,
@@ -76,20 +106,31 @@ export const parseCabinetDimensions = (rawCode: string): CabinetDimensions | nul
         };
     }
 
-    // 3. Tall Cabinets (U/T + Width + Height) e.g. U1884
-    const tallMatch = code.match(/^(U|T|TP)(\d{2})(\d{2})$/);
+    // 3. Tall Cabinets (U/T/RR + Width + Height) e.g. U1884, RR96
+    const tallMatch = code.match(/^(U|T|TP|RR)(\d{2,3})(\d{2})?/); // RR96 might not have width in name clearly or is 96 high
     if (tallMatch) {
+        // RR96 usually means Ref Return 96 High. Width might be implied.
+        // If code is RR96, group 2 is 96.
+        if (tallMatch[1] === 'RR') {
+             return {
+                type: CabinetType.TALL,
+                width: 3, // 3" panel usually
+                height: parseInt(tallMatch[2]),
+                depth: 24,
+                code
+            };
+        }
         return {
             type: CabinetType.TALL,
             width: parseInt(tallMatch[2]),
-            height: parseInt(tallMatch[3]),
+            height: tallMatch[3] ? parseInt(tallMatch[3]) : 84,
             depth: 24,
             code
         };
     }
 
     // 4. Panels/Fillers/Accessories (Standard Prefixes)
-    if (code.startsWith('WF') || code.startsWith('BF') || code.startsWith('TK') || code.startsWith('CM') || code.startsWith('REP') || code.startsWith('DWR')) {
+    if (code.startsWith('WF') || code.startsWith('BF') || code.startsWith('TK') || code.startsWith('CM') || code.startsWith('REP') || code.startsWith('DWR') || code.startsWith('DWP')) {
         const numMatch = code.match(/\d+/);
         const width = numMatch ? parseInt(numMatch[0]) : 3; // Default 3" for fillers/panels if no number
         const isWall = code.startsWith('W');
@@ -124,35 +165,9 @@ export const parseCabinetDimensions = (rawCode: string): CabinetDimensions | nul
         }
     }
 
-    // 7. Special Cases (ALP10W, WAIN01)
-    
-    // Handle suffix W (e.g. ALP10W -> 10" Wide)
-    const suffixWMatch = code.match(/^([A-Z]+)(\d+)W$/);
-    if (suffixWMatch) {
-        return { 
-            type: CabinetType.ACCESSORY, 
-            width: parseInt(suffixWMatch[2]), 
-            height: 30, 
-            depth: 0.75, 
-            code 
-        };
-    }
-
-    // Handle Wainscoting (WAIN)
-    if (code.startsWith('WAIN')) {
-        return {
-            type: CabinetType.ACCESSORY,
-            width: 96, // Assume 8ft sheet
-            height: 36,
-            depth: 0.25,
-            code
-        };
-    }
-
     // 8. Generic Fallback: Extract ANY number as width
     const genericNum = code.match(/(\d+)/);
     if (genericNum) {
-         // If it has a number, assume it's a width-based accessory if we can't identify it
          return {
             type: CabinetType.ACCESSORY,
             width: parseInt(genericNum[1]),
@@ -172,89 +187,96 @@ export const parseCabinetDimensions = (rawCode: string): CabinetDimensions | nul
 };
 
 /**
- * DEALER SIZE-BASED PRICING LOGIC
+ * Attempts to find a matching SKU in the DB by looking for the nearest numeric size.
+ * e.g. Input: B17 -> Finds B18 (closest larger) or B15 (closest smaller).
  */
-export const calculateSizeBasedPrice = (
-    item: { sku?: string; description?: string; rawCode?: string },
-    line: CabinetLine
-): { 
-    price: number; 
-    matchType: 'size_based'; 
-    matchedDimensions: string;
-    pricingMethod: 'linear_foot' | 'unit';
-    calculationDetails: string;
-    isValid: boolean;
-} => {
-    const rawSku = item.rawCode || item.sku || "";
-    const dims = parseCabinetDimensions(rawSku);
+const findNearestSizeMatch = (
+    normalizedKey: string,
+    pricingDB: Record<string, { sku: string; price: number }>
+): { sku: string; price: number; matchType: string } | null => {
+    
+    // Extract Prefix and Number (e.g. B and 17)
+    const match = normalizedKey.match(/^([A-Z]+)(\d+)$/);
+    if (!match) return null;
 
-    const rates = line.rates || {
-        basePerFoot: 200,
-        wallPerFoot: 150,
-        tallPerUnit: 800,
-        accessoryPerFoot: 50
-    };
+    const prefix = match[1];
+    const targetSize = parseInt(match[2]);
 
-    if (!dims || dims.type === CabinetType.UNKNOWN) {
-        return {
-            price: 0,
-            matchType: 'size_based',
-            matchedDimensions: 'Unknown',
-            pricingMethod: 'unit',
-            calculationDetails: 'Invalid Code',
-            isValid: false
-        };
+    let bestMatch: string | null = null;
+    let minDiff = Number.MAX_VALUE;
+
+    // Iterate DB keys to find same prefix
+    Object.keys(pricingDB).forEach(key => {
+        const dbMatch = key.match(/^([A-Z]+)(\d+)$/);
+        if (dbMatch && dbMatch[1] === prefix) {
+            const dbSize = parseInt(dbMatch[2]);
+            const diff = Math.abs(dbSize - targetSize);
+            
+            // Priority: Exact > Closest.
+            // If diff is same (e.g. 17 is between 16 and 18), prefer larger (18) to be safe on price.
+            if (diff < minDiff || (diff === minDiff && dbSize > targetSize)) {
+                minDiff = diff;
+                bestMatch = key;
+            }
+        }
+    });
+
+    if (bestMatch && minDiff <= 6) { // Only match if within 6 inches to prevent B12 matching B99
+        return { ...pricingDB[bestMatch], matchType: 'nearest_size' };
     }
 
-    let price = 0;
-    let pricingMethod: 'linear_foot' | 'unit' = 'linear_foot';
-    let calculationDetails = "";
-
-    const linearFeet = dims.width / 12;
-
-    if (dims.type === CabinetType.BASE || dims.type === CabinetType.VANITY) {
-        price = linearFeet * rates.basePerFoot;
-        pricingMethod = 'linear_foot';
-        calculationDetails = `${dims.width}" (${linearFeet.toFixed(2)} LF) x $${rates.basePerFoot}/ft`;
-    
-    } else if (dims.type === CabinetType.WALL) {
-        price = linearFeet * rates.wallPerFoot;
-        pricingMethod = 'linear_foot';
-        calculationDetails = `${dims.width}" (${linearFeet.toFixed(2)} LF) x $${rates.wallPerFoot}/ft`;
-
-    } else if (dims.type === CabinetType.TALL) {
-        price = rates.tallPerUnit;
-        pricingMethod = 'unit';
-        calculationDetails = `Flat Rate (Tall Unit)`;
-
-    } else if (dims.type === CabinetType.ACCESSORY) {
-        price = linearFeet * rates.accessoryPerFoot;
-        pricingMethod = 'linear_foot';
-        calculationDetails = `${dims.width}" (${linearFeet.toFixed(2)} LF) x $${rates.accessoryPerFoot}/ft`;
-    
-    } else if (dims.type === CabinetType.HARDWARE) {
-        price = 15; // Flat rate fallback for hardware
-        pricingMethod = 'unit';
-        calculationDetails = 'Hardware Estimate';
-    }
-    
-    return {
-        price: Math.max(1, Math.round(price)), 
-        matchType: 'size_based',
-        matchedDimensions: `${dims.width}"W x ${dims.height}"H`,
-        pricingMethod,
-        calculationDetails,
-        isValid: true
-    };
+    return null;
 };
 
 /**
- * Validates the AI-generated BOM using a Hybrid Dealer Model.
+ * SMART CATALOG MATCHER
+ */
+export const findBestCatalogMatch = (
+    normalizedKey: string,
+    rawCode: string,
+    pricingDB: Record<string, { sku: string; price: number }>
+): { sku: string; price: number; matchType: string } | null => {
+    
+    // 1. Direct Match (Normalized)
+    if (pricingDB[normalizedKey]) {
+        return { ...pricingDB[normalizedKey], matchType: 'exact_norm' };
+    }
+
+    // 2. Direct Match (Raw)
+    if (pricingDB[rawCode]) {
+        return { ...pricingDB[rawCode], matchType: 'exact_raw' };
+    }
+
+    // 3. Category Fallback (e.g. BF3 -> BF)
+    // Try stripping numbers to find a generic category price
+    const categoryKey = normalizedKey.replace(/\d+/g, '');
+    if (categoryKey && pricingDB[categoryKey]) {
+        return { ...pricingDB[categoryKey], matchType: 'category_fallback' };
+    }
+
+    // 4. Nearest Size Match (e.g. B17 -> B18)
+    const sizeMatch = findNearestSizeMatch(normalizedKey, pricingDB);
+    if (sizeMatch) return sizeMatch;
+
+    // 5. Fuzzy Match / Fallback Logic (Substring)
+    const dbKeys = Object.keys(pricingDB);
+    for (const key of dbKeys) {
+        if (normalizedKey.startsWith(key) && Math.abs(normalizedKey.length - key.length) < 3) {
+             return { ...pricingDB[key], matchType: 'fuzzy_start' };
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Validates the AI-generated BOM using Manufacturer Pricing Guide.
+ * STRICT: Unit Price must come from the Pricing Guide.
  */
 export const validateBOMAgainstCatalog = (
     bomCandidates: BOMItem[],
     pricingDB: Record<string, { sku: string; price: number }>, // Exact match DB
-    activeLine?: CabinetLine // Line config for size-based rates
+    activeLine?: CabinetLine // Line config for Multiplier
 ): BOMItem[] => {
     // Fallback if no line provided
     const defaultRates: CabinetLine = activeLine || {
@@ -263,108 +285,107 @@ export const validateBOMAgainstCatalog = (
         tier: 'Mid-Range',
         description: '',
         finish: '',
-        multiplier: 1,
+        multiplier: 1, // Default multiplier
         finishPremium: 0,
-        shippingFactor: 0.05,
-        rates: { basePerFoot: 250, wallPerFoot: 200, tallPerUnit: 1000, accessoryPerFoot: 100 }
+        shippingFactor: 0.05
     };
 
     return bomCandidates.map(item => {
+        // STEP 1: Normalize to NKBA Standards first
         const normalizedKey = normalizeSku(item.rawCode || item.sku || item.description || "");
         const rawCode = item.rawCode || "";
 
-        // 1. CHECK MANUFACTURER CATALOG (Exact SKU Match)
-        const strictMatch = pricingDB[normalizedKey] || pricingDB[rawCode];
+        // STEP 2: Find best match in Manufacturer DB using NKBA key
+        const match = findBestCatalogMatch(normalizedKey, rawCode, pricingDB);
         
-        if (strictMatch) {
-             const dims = parseCabinetDimensions(strictMatch.sku);
+        if (match) {
+             // For Generic/Category matches, we might want to keep the ORIGINAL dimensions if possible, 
+             // but use the Generic price.
+             // e.g. Input BF3 (3"), Matched BF ($50). We want description to still say "3 inch".
+             
+             let dims = parseCabinetDimensions(match.sku);
+             // If we matched a category (e.g. BF) but had specific input (BF3), try to re-parse input for dimensions
+             if (match.matchType === 'category_fallback') {
+                 const originalDims = parseCabinetDimensions(normalizedKey);
+                 if (originalDims && originalDims.width > 0) {
+                     dims = originalDims;
+                 }
+             }
+
+             // APPLY MULTIPLIER: Catalog Price * Line Multiplier
+             const finalUnitPrice = match.price * defaultRates.multiplier;
+
              return {
                 ...item,
-                sku: strictMatch.sku,
+                sku: match.sku, // Use the official catalog SKU or Category Code
                 normalizedCode: normalizedKey,
                 verificationStatus: 'verified',
-                unitPrice: strictMatch.price,
-                totalPrice: strictMatch.price * item.quantity,
-                description: item.description || strictMatch.sku,
+                unitPrice: finalUnitPrice,
+                totalPrice: finalUnitPrice * item.quantity,
+                description: item.description || match.sku,
                 dimensions: dims || undefined,
                 verificationProof: {
                     manufacturer: defaultRates.name,
-                    catalogSource: "Manufacturer Catalog",
-                    matchType: 'exact',
-                    matchedCode: strictMatch.sku,
+                    catalogSource: "Manufacturer Pricing Guide",
+                    matchType: match.matchType as any,
+                    matchedCode: match.sku,
                     isQuoted: true,
-                    pricingMethod: 'sku',
-                    calculationDetails: `Catalog Price (${defaultRates.name})`
+                    pricingMethod: 'unit',
+                    calculationDetails: `Unit Price $${match.price} x Multiplier ${defaultRates.multiplier}`
                 }
             };
         }
 
-        // 2. FALLBACK TO SIZE-BASED PRICING
-        const { price, matchType, matchedDimensions, pricingMethod, calculationDetails, isValid } = calculateSizeBasedPrice(item, defaultRates);
-
-        if (isValid) {
-            const dims = parseCabinetDimensions(normalizedKey);
-            return {
-                ...item,
-                sku: normalizedKey,
-                normalizedCode: normalizedKey,
-                verificationStatus: 'verified',
-                unitPrice: price,
-                totalPrice: price * item.quantity,
-                description: item.description || `${dims?.type || 'Item'} - ${dims?.width || '?'}W x ${dims?.height || '?'}H`,
-                dimensions: dims || undefined,
-                verificationProof: {
-                    manufacturer: defaultRates.name,
-                    catalogSource: "Dealer Rate Sheet",
-                    matchType: matchType,
-                    matchedCode: normalizedKey,
-                    matchedDimensions: matchedDimensions,
-                    pricingMethod: pricingMethod,
-                    isQuoted: true,
-                    calculationDetails: calculationDetails
-                }
-            };
-        }
-
-        // 3. REMOVE / MARK INVALID
+        // NO MATCH FOUND - DO NOT GUESS SIZE PRICE.
+        // Return 0 price and mark for review.
         return {
             ...item,
-            sku: normalizedKey,
+            sku: normalizedKey || item.sku,
             normalizedCode: normalizedKey,
             verificationStatus: 'missing',
             unitPrice: 0,
             totalPrice: 0,
-            description: item.description || "Unknown Item",
+            description: item.description || "Unknown Item - No Catalog Match",
         };
     });
 };
 
+/**
+ * Calculates item price using the full pricing logic (Smart Match, Category Fallback, Nearest Size).
+ * Must be called with the specific line's pricing DB.
+ */
 export const calculateItemPrice = (
-    sku: string, 
-    lineId: string, 
-    quantity: number,
-    options: string[] = []
-): { unitPrice: number; totalPrice: number; isValid: boolean; description: string; validationMessage?: string } => {
-    const line = CABINET_LINES.find(l => l.id === lineId);
-    if (!line) return { unitPrice: 0, totalPrice: 0, isValid: false, description: "Unknown Line" };
+    rawSku: string, 
+    pricingDB: Record<string, { sku: string; price: number }>,
+    lineConfig: CabinetLine
+): { unitPrice: number; isValid: boolean; description: string; validationMessage?: string } => {
+    
+    // Normalize input to NKBA before lookup
+    const normalizedKey = normalizeSku(rawSku);
+    
+    // Use the smart matcher to find best price
+    const match = findBestCatalogMatch(normalizedKey, rawSku, pricingDB);
 
-    const item = { sku, rawCode: sku, description: sku };
-    const { price, isValid, matchedDimensions } = calculateSizeBasedPrice(item as any, line);
+    if (match) {
+        // Calculate with multiplier
+        const unitPrice = match.price * lineConfig.multiplier;
+        
+        let desc = match.sku;
+        if (match.matchType === 'category_fallback') desc += " (Category Match)";
+        if (match.matchType === 'nearest_size') desc += " (Nearest Size)";
 
-    if (!isValid) {
-        return { 
-            unitPrice: 0, 
-            totalPrice: 0, 
-            isValid: false, 
-            description: "Invalid/Non-Cabinet Item", 
-            validationMessage: "Could not determine dimensions from code." 
+        return {
+            unitPrice: unitPrice,
+            isValid: true,
+            description: desc,
+            validationMessage: undefined
         };
     }
 
     return {
-        unitPrice: price,
-        totalPrice: price * quantity,
-        isValid: true,
-        description: `Cabinet ${matchedDimensions}`
+        unitPrice: 0,
+        isValid: false, 
+        description: "Unknown Item",
+        validationMessage: "Item not found in catalog" 
     };
 };

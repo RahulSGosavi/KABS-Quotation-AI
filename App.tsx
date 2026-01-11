@@ -1,16 +1,19 @@
-
 import React, { useState, useEffect } from 'react';
-import { DemoState, BOMItem, CabinetLine, CatalogueFile, ProjectInfo } from './types';
+import { DemoState, BOMItem, CabinetLine, CatalogueFile, ProjectInfo, KitchenShape } from './types';
 import { MOCK_PROJECT_DEFAULTS, DEMO_LINES, PRICING_DB } from './services/mockData';
-import { analyzePlan, suggestBOM, consolidateBOM } from './services/ai';
+import { analyzePlan, suggestBOM, consolidateBOM, analyzeLayout } from './services/ai';
 import { ManufacturerService } from './services/manufacturerService';
 import { validateBOMAgainstCatalog } from './services/pricingEngine';
 import { AuthService } from './services/authService';
 import { 
     StepStart, 
-    StepUpload, 
+    StepShapeSelection,
+    StepUpload,
+    StepDesignResult, 
     StepBOM, 
-    StepLineSwitch, 
+    StepManufacturerSelect, // Previously LineSwitch
+    StepExtractionReview, // NEW
+    StepSpecSelection, // NEW
     StepProjectDetails,
     StepQuote 
 } from './components/DemoComponents';
@@ -20,11 +23,15 @@ export default function App() {
     // Central Demo State
     const [state, setState] = useState<DemoState>({
         step: 'start',
+        mode: null,
         planImage: null,
         aiAnalysis: null,
+        rawExtractedCodes: [], // New list for Step 2
+        designLayout: null,
         bom: [],
         selectedLineId: DEMO_LINES[0].id,
         projectInfo: MOCK_PROJECT_DEFAULTS,
+        selectedShape: null,
         lines: DEMO_LINES, 
         pricingDatabase: PRICING_DB,
         globalGuidelines: {
@@ -48,110 +55,151 @@ export default function App() {
             const lines = await ManufacturerService.getLines();
             const pricing = await ManufacturerService.getAllPricing();
             
+            // 3. Load Global Settings (Cloud Persisted)
+            const globalConfig = await ManufacturerService.getGlobalSettings();
+
             setState(prev => ({
                 ...prev,
                 lines: lines.length > 0 ? lines : prev.lines,
                 pricingDatabase: pricing,
-                selectedLineId: lines.length > 0 ? lines[0].id : prev.selectedLineId
+                selectedLineId: lines.length > 0 ? lines[0].id : prev.selectedLineId,
+                // Use cloud config if available, otherwise keep default/null
+                globalGuidelines: globalConfig.guidelines || prev.globalGuidelines,
+                nkbaStandards: globalConfig.nkba || null
             }));
         };
         loadData();
     }, []);
 
+    // --- Core File Processing (Shared) ---
+    const processFile = async (file: File): Promise<string> => {
+        return new Promise((resolve) => {
+            if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target?.result as string;
+                    img.onload = () => {
+                        const MAX_DIM = 3072;
+                        let width = img.width;
+                        let height = img.height;
+
+                        if (width > MAX_DIM || height > MAX_DIM) {
+                            if (width > height) {
+                                height *= MAX_DIM / width;
+                                width = MAX_DIM;
+                            } else {
+                                width *= MAX_DIM / height;
+                                height = MAX_DIM;
+                            }
+                        }
+
+                        const canvas = document.createElement('canvas');
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        if (ctx) {
+                            ctx.drawImage(img, 0, 0, width, height);
+                            resolve(canvas.toDataURL('image/jpeg', 0.85));
+                        } else {
+                            resolve(event.target?.result as string);
+                        }
+                    };
+                };
+                reader.readAsDataURL(file);
+            } else {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result as string);
+                reader.readAsDataURL(file);
+            }
+        });
+    };
+
     // --- Actions ---
 
     const handleUpload = async (file: File) => {
         if (!file) {
-            setState(prev => ({ ...prev, planImage: null, aiAnalysis: null }));
+            setState(prev => ({ ...prev, planImage: null, aiAnalysis: null, designLayout: null }));
             return;
         }
         
         setIsAnalyzing(true);
-        
-        // Optimize: Compress images before sending to AI
-        const processFile = async (): Promise<string> => {
-            return new Promise((resolve) => {
-                // If it's an image, resize it to max 3072px (3K) width/height to ensure text readability
-                if (file.type.startsWith('image/')) {
-                    const reader = new FileReader();
-                    reader.onload = (event) => {
-                        const img = new Image();
-                        img.src = event.target?.result as string;
-                        img.onload = () => {
-                            const MAX_DIM = 3072; // Increased from 1500 to capture small text
-                            let width = img.width;
-                            let height = img.height;
-
-                            if (width > MAX_DIM || height > MAX_DIM) {
-                                if (width > height) {
-                                    height *= MAX_DIM / width;
-                                    width = MAX_DIM;
-                                } else {
-                                    width *= MAX_DIM / height;
-                                    height = MAX_DIM;
-                                }
-                            }
-
-                            const canvas = document.createElement('canvas');
-                            canvas.width = width;
-                            canvas.height = height;
-                            const ctx = canvas.getContext('2d');
-                            if (ctx) {
-                                ctx.drawImage(img, 0, 0, width, height);
-                                // Compress to JPEG 85% for better quality/size balance
-                                resolve(canvas.toDataURL('image/jpeg', 0.85));
-                            } else {
-                                resolve(event.target?.result as string);
-                            }
-                        };
-                    };
-                    reader.readAsDataURL(file);
-                } else {
-                    // For PDF, we must read as DataURL directly
-                    const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result as string);
-                    reader.readAsDataURL(file);
-                }
-            });
-        };
 
         try {
-            const base64 = await processFile();
+            const base64 = await processFile(file);
+            
+            // IF DESIGN MODE: Standard Flow
+            if (state.mode === 'design') {
+                setState(prev => ({ 
+                    ...prev, 
+                    planImage: base64, 
+                    aiAnalysis: "Done", 
+                }));
+                setIsAnalyzing(false);
+                return;
+            } 
+            
+            // QUOTATION MODE: Extract RAW CODES
             setState(prev => ({ ...prev, planImage: base64 }));
+            const rawCodes = await analyzePlan(base64); // Now returns string[]
             
-            // Call AI
-            const analysis = await analyzePlan(base64);
+            if (Array.isArray(rawCodes)) {
+                setState(prev => ({ 
+                    ...prev, 
+                    rawExtractedCodes: rawCodes,
+                    step: 'extraction-review' 
+                }));
+            } else {
+                alert("Failed to extract valid codes.");
+            }
             
-            setState(prev => ({ 
-                ...prev, 
-                aiAnalysis: analysis 
-            }));
         } catch (err) {
             console.error("Processing failed", err);
             alert("Failed to process file.");
         } finally {
-            setIsAnalyzing(false);
+            if (state.mode !== 'design') {
+                setIsAnalyzing(false);
+            }
         }
     };
 
+    const handleShapeSelection = async (shape: KitchenShape) => {
+        setState(prev => ({ ...prev, selectedShape: shape }));
+        setIsGeneratingBOM(true); 
+        
+        try {
+            if (!state.planImage) return;
+            const layout = await analyzeLayout(state.planImage, !!state.nkbaStandards, shape);
+            setState(prev => ({
+                ...prev,
+                designLayout: layout,
+                step: 'design-result'
+            }));
+        } catch(e) {
+            console.error(e);
+            alert("Failed to generate design layout.");
+        } finally {
+            setIsGeneratingBOM(false);
+        }
+    };
+
+    // --- NEW: GENERATE BOM FROM SPECS ---
     const handleGenerateBOM = async () => {
-        if (!state.aiAnalysis) return;
+        // Input: Raw Codes + Selected Line + Specs
+        // Output: Grouped, Categorized, Priced BOM
         
         setIsGeneratingBOM(true);
         try {
-            // 1. Get Candidate Items from AI (Deterministic Extraction)
-            const suggestedBom = await suggestBOM(state.aiAnalysis);
-            
-            // 2. Consolidate into Unique Line Items (Global SKU Grouping)
+            // 1. Group & Categorize Raw Codes (AI)
+            const suggestedBom = await suggestBOM(state.rawExtractedCodes);
             const consolidatedBom = consolidateBOM(suggestedBom);
             
-            // 3. Assign unique IDs immediately
             const bomWithIds = consolidatedBom.map((item, idx) => ({
                 ...item,
                 id: `bom-${Date.now()}-${idx}`
             }));
 
-            // 4. Strict Validation against Selected Catalog & Size Based Pricing
+            // 2. Validate Against Pricing DB
             const activeLineId = state.selectedLineId;
             const activeLine = state.lines.find(l => l.id === activeLineId);
             const pricingDB = state.pricingDatabase[activeLineId] || {};
@@ -181,20 +229,33 @@ export default function App() {
         }));
     };
 
+    const handleUpdateSpecs = (updates: Partial<ProjectInfo['specs']>) => {
+        setState(prev => ({
+            ...prev,
+            projectInfo: {
+                ...prev.projectInfo,
+                specs: { ...prev.projectInfo.specs, ...updates }
+            }
+        }));
+    };
+
     const handleRestart = () => {
         setState(prev => ({
             ...prev,
             step: 'start',
+            mode: null,
             planImage: null,
             aiAnalysis: null,
+            rawExtractedCodes: [],
+            designLayout: null,
             bom: [],
+            selectedShape: null,
             selectedLineId: prev.lines[0].id, 
             projectInfo: MOCK_PROJECT_DEFAULTS
         }));
     };
 
-    // --- Admin Actions ---
-
+    // --- Admin Actions (Passed down) ---
     const handleUpdateLine = (lineId: string, updates: Partial<CabinetLine>) => {
         setState(prev => ({
             ...prev,
@@ -219,41 +280,7 @@ export default function App() {
 
         setState(prev => ({ ...prev, lines: [...prev.lines, newLine] }));
 
-        const saved = await ManufacturerService.addLine(newLine);
-        if (!saved) {
-            alert("Error: Database tables missing. Data will be lost on refresh.");
-        }
-
-        const basePrices: Record<string, number> = {
-            'Base Cabinet': 220,
-            'Wall Cabinet': 180,
-            'Sink Base': 280,
-            'Drawer Base': 350,
-            'Corner Cabinet': 450,
-            'Tall Cabinet': 650,
-            'Refrigerator Panel': 150,
-            'Dishwasher Panel': 90,
-            'default': 100 
-        };
-
-        const initialPricing: Record<string, { sku: string; price: number }> = {};
-        
-        Object.entries(basePrices).forEach(([key, basePrice]) => {
-            const prefix = name.substring(0, 3).toUpperCase();
-            const sku = key === 'default' ? `${prefix}-GEN` : `${prefix}-${key.split(' ')[0].toUpperCase()}`;
-            
-            initialPricing[key] = {
-                sku: sku,
-                price: Math.round(basePrice * multiplier)
-            };
-        });
-
-        await ManufacturerService.savePricing(lineId, initialPricing);
-        
-        setState(prev => ({
-            ...prev,
-            pricingDatabase: { ...prev.pricingDatabase, [lineId]: initialPricing }
-        }));
+        await ManufacturerService.addLine(newLine); 
     };
 
     const handleDeleteLine = async (lineId: string) => {
@@ -286,10 +313,7 @@ export default function App() {
     const handleCatalogUpload = async (lineId: string, file: File, type: 'excel' | 'pdf' | 'nkba') => {
         const uploadedFile = await ManufacturerService.uploadCatalogFile(lineId, file, type);
         
-        if (!uploadedFile) {
-            alert("Upload failed. Check console for details.");
-            return;
-        }
+        if (!uploadedFile) return;
 
         if (lineId === 'global') {
             if (type === 'pdf') setState(prev => ({ ...prev, globalGuidelines: uploadedFile }));
@@ -303,20 +327,12 @@ export default function App() {
         
         if (type === 'excel') {
             const parsedPricing = await ManufacturerService.parseCatalogExcel(file);
-            
             if (Object.keys(parsedPricing).length > 0) {
                  const existingDefault = newPricingDB[lineId]?.['default'];
-                 
                  newPricingDB[lineId] = { ...parsedPricing };
-                 if (existingDefault) {
-                     newPricingDB[lineId]['default'] = existingDefault;
-                 } else {
-                     newPricingDB[lineId]['default'] = { sku: 'GEN-001', price: 100 };
-                 }
-
+                 if (existingDefault) newPricingDB[lineId]['default'] = existingDefault;
+                 else newPricingDB[lineId]['default'] = { sku: 'GEN-001', price: 100 };
                  await ManufacturerService.savePricing(lineId, newPricingDB[lineId]);
-            } else {
-                alert("Could not parse Excel. Ensure headers: 'SKU' and 'Price'.");
             }
         }
 
@@ -335,7 +351,8 @@ export default function App() {
         switch (state.step) {
             case 'start':
                 return <StepStart 
-                    onNext={() => setState(s => ({ ...s, step: 'upload' }))} 
+                    onDesignMode={() => setState(s => ({ ...s, mode: 'design', step: 'upload' }))}
+                    onQuoteMode={() => setState(s => ({ ...s, mode: 'quotation', step: 'upload' }))}
                     onAdmin={() => setState(s => ({ ...s, step: 'admin-login' }))}
                 />;
             
@@ -361,46 +378,96 @@ export default function App() {
             case 'upload':
                 return (
                     <StepUpload 
+                        mode={state.mode || 'quotation'}
                         onUpload={handleUpload} 
                         isAnalyzing={isAnalyzing}
-                        analysisResult={state.aiAnalysis}
-                        onNext={handleGenerateBOM}
-                        onBack={() => setState(s => ({ ...s, step: 'start' }))}
+                        // For Design mode only
+                        analysisResult={state.mode === 'design' ? (state.planImage ? "Ready" : null) : null}
+                        onNext={() => setState(s => ({ ...s, step: 'shape-selection' }))}
+                        onBack={() => setState(s => ({ ...s, step: 'start', mode: null }))}
                         isGenerating={isGeneratingBOM}
                     />
                 );
+
+            case 'shape-selection':
+                return (
+                    <StepShapeSelection 
+                        onSelectShape={handleShapeSelection}
+                        onBack={() => setState(s => ({ ...s, step: 'upload' }))}
+                    />
+                )
+
+            case 'design-result':
+                return (
+                    <StepDesignResult 
+                        layout={state.designLayout}
+                        onBack={() => setState(s => ({ ...s, step: 'shape-selection', designLayout: null }))}
+                        nkbaRules={state.nkbaStandards}
+                    />
+                );
             
+            // --- NEW WORKFLOW STEPS START HERE ---
+
+            case 'extraction-review':
+                return (
+                    <StepExtractionReview 
+                        codes={state.rawExtractedCodes}
+                        onRemoveCode={(idx) => {
+                            const newCodes = [...state.rawExtractedCodes];
+                            newCodes.splice(idx, 1);
+                            setState(s => ({ ...s, rawExtractedCodes: newCodes }));
+                        }}
+                        onNext={() => setState(s => ({ ...s, step: 'manufacturer-select' }))}
+                        onBack={() => setState(s => ({ ...s, step: 'upload' }))}
+                    />
+                );
+
+            case 'manufacturer-select':
+                return (
+                    <StepManufacturerSelect
+                        selectedLineId={state.selectedLineId}
+                        lines={state.lines}
+                        onChangeLine={(id) => setState(s => ({ ...s, selectedLineId: id }))}
+                        onNext={() => setState(s => ({ ...s, step: 'spec-selection' }))}
+                        onBack={() => setState(s => ({ ...s, step: 'extraction-review' }))}
+                    />
+                );
+
+            case 'spec-selection':
+                return (
+                    <StepSpecSelection 
+                        line={currentLine || state.lines[0]}
+                        specs={state.projectInfo.specs}
+                        onUpdateSpecs={handleUpdateSpecs}
+                        onNext={handleGenerateBOM}
+                        onBack={() => setState(s => ({ ...s, step: 'manufacturer-select' }))}
+                        isProcessing={isGeneratingBOM}
+                    />
+                );
+
+            // --- END NEW WORKFLOW ---
+
             case 'bom':
                 return (
                     <StepBOM 
                         bom={state.bom}
                         setBom={handleUpdateBOM}
-                        onNext={() => setState(s => ({ ...s, step: 'line-switch' }))}
-                        onBack={() => setState(s => ({ ...s, step: 'upload' }))}
-                    />
-                );
-
-            case 'line-switch':
-                return (
-                    <StepLineSwitch 
-                        bom={state.bom}
-                        setBom={handleUpdateBOM}
+                        onNext={() => setState(s => ({ ...s, step: 'quote' }))}
+                        onBack={() => setState(s => ({ ...s, step: 'spec-selection' }))}
                         selectedLineId={state.selectedLineId}
-                        lines={state.lines}
-                        pricingDatabase={state.pricingDatabase}
-                        onChangeLine={(id) => setState(s => ({ ...s, selectedLineId: id }))}
-                        onNext={() => setState(s => ({ ...s, step: 'details' }))}
-                        onBack={() => setState(s => ({ ...s, step: 'bom' }))}
+                        lines={state.lines} // PASSED
+                        pricingDatabase={state.pricingDatabase} // PASSED
                     />
                 );
 
             case 'details':
+                // Keeping legacy details step if needed, but mostly replaced by SpecSelection
                 return (
                     <StepProjectDetails
                         projectInfo={state.projectInfo}
                         onUpdate={handleUpdateProjectInfo}
                         onNext={() => setState(s => ({ ...s, step: 'quote' }))}
-                        onBack={() => setState(s => ({ ...s, step: 'line-switch' }))}
+                        onBack={() => setState(s => ({ ...s, step: 'bom' }))}
                         selectedLineName={currentLine?.name || ""}
                     />
                 )
@@ -414,7 +481,7 @@ export default function App() {
                         pricingDatabase={state.pricingDatabase}
                         projectInfo={state.projectInfo}
                         onRestart={handleRestart}
-                        onBack={() => setState(s => ({ ...s, step: 'details' }))}
+                        onBack={() => setState(s => ({ ...s, step: 'bom' }))}
                     />
                 );
         }

@@ -1,7 +1,8 @@
-
 // Demo Domain Models
 
-export type DemoStep = 'start' | 'upload' | 'bom' | 'line-switch' | 'details' | 'quote' | 'admin-login' | 'admin-dashboard';
+export type DemoStep = 'start' | 'upload' | 'extraction-review' | 'manufacturer-select' | 'spec-selection' | 'bom' | 'details' | 'quote' | 'admin-login' | 'admin-dashboard' | 'shape-selection' | 'design-result';
+export type AppMode = 'design' | 'quotation' | null;
+export type KitchenShape = 'L-Shape' | 'U-Shape' | 'Galley' | 'Island' | 'Single Wall';
 
 export enum CabinetType {
     BASE = 'Base',
@@ -107,6 +108,14 @@ export interface PricingRates {
     accessoryPerFoot: number;
 }
 
+// Configuration options for specific lines (e.g. available door styles)
+export interface LineOptions {
+    doorStyles: string[];
+    woodSpecies: string[];
+    finishes: string[];
+    constructions: string[];
+}
+
 export interface CabinetLine {
     id: string;
     name: string;
@@ -121,6 +130,8 @@ export interface CabinetLine {
     guidelinesPdf?: CatalogueFile;
     // Size-based pricing
     rates?: PricingRates;
+    // Dynamic Options
+    availableOptions?: LineOptions;
 }
 
 export interface ProjectSpecs {
@@ -132,6 +143,14 @@ export interface ProjectSpecs {
     hinges: string;
     poNumber: string;
     soNumber: string;
+}
+
+export interface DealerService {
+    id: string;
+    name: string; // e.g. "Installation", "Delivery"
+    type: 'flat' | 'percent_material' | 'per_cabinet';
+    value: number;
+    isTaxable: boolean;
 }
 
 export interface Project {
@@ -160,15 +179,30 @@ export interface ProjectInfo {
     // Manufacturer
     manufacturerName: string;
     specs: ProjectSpecs;
+    // Financials
+    taxRate: number; // e.g. 0.07
+    dealerServices: DealerService[];
+}
+
+// New Interface for Design AI Output
+export interface DesignLayout {
+    kitchenShape: KitchenShape;
+    designNotes: string;
+    zoningAnalysis: string; // "Cooking Zone", "Cleaning Zone"
+    suggestedCabinets: BOMItem[]; // These are DESIGN intents, not priced items
 }
 
 export interface DemoState {
     step: DemoStep;
+    mode: AppMode; // STRICT SEPARATION
     planImage: string | null; // Base64
     aiAnalysis: string | null;
+    rawExtractedCodes: string[]; // NEW: For step 2 review
+    designLayout: DesignLayout | null; // For Design Mode only
     bom: BOMItem[];
     selectedLineId: string;
     projectInfo: ProjectInfo;
+    selectedShape: KitchenShape | null; // New Field
     // Data State (lifted for Admin modification)
     lines: CabinetLine[];
     pricingDatabase: Record<string, Record<string, { sku: string; price: number }>>;

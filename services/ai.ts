@@ -1,6 +1,5 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
-import { BOMItem, ChatMessage } from "../types";
+import { BOMItem, ChatMessage, DesignLayout, KitchenShape, ProjectSpecs } from "../types";
 import { normalizeSku } from './pricingEngine';
 
 // Lazy initialization to prevent top-level crashes if env is not ready
@@ -9,21 +8,32 @@ const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 // Using gemini-3-flash-preview for the fastest possible 'Flash' performance
 const MODEL_NAME = 'gemini-3-flash-preview';
 
-const SYSTEM_INSTRUCTION = `You are a strict KABS Cabinet Quotation Agent.
-Your ONLY goal is to extract ALL CABINET CODES from the floor plan.
+const SYSTEM_INSTRUCTION = `You are a professional US kitchen cabinet billing engine.
 
-SCANNING RULES:
-1. Scan the image from Top-Left to Bottom-Right.
-2. List EVERY single alphanumeric code you see.
-3. Include cabinets (B30, W3030), hardware codes if visible, and accessory codes.
-4. If you see multiple identical codes (e.g. two "B30" cabinets), list BOTH of them separately. DO NOT summarize.
-5. Ignore generic room labels (Kitchen, Island).
+You specialize in 1951 Cabinetry pricing.
+You strictly follow drawing-based cabinet extraction.
 
-Output a simple comma-separated list of raw codes found. Do not add markdown or explanations.`;
+You never guess prices.
+You never skip steps.
+Accuracy is mandatory.
 
-export async function analyzePlan(dataUrl: string): Promise<string> {
+🔴 HARD RULES (NEVER BREAK)
+❌ Never guess prices
+❌ Never skip validation
+❌ Never mix cabinet + labor pricing
+❌ Never auto-fill missing specs
+❌ Never generate demo numbers
+
+Your output must be strictly structured data extracted from the visual plan provided.
+`;
+
+/**
+ * STEP 1: PURE EXTRACTION
+ * Extracts ONLY a list of cabinet codes as strings.
+ */
+export async function analyzePlan(dataUrl: string): Promise<string[]> {
     const match = dataUrl.match(/^data:(.+);base64,(.+)$/);
-    if (!match) return "Error: Invalid file format.";
+    if (!match) return [];
 
     const mimeType = match[1];
     const data = match[2];
@@ -36,28 +46,43 @@ export async function analyzePlan(dataUrl: string): Promise<string> {
                 parts: [
                     { inlineData: { mimeType, data } },
                     {
-                        text: "List every cabinet label found in this plan, comma-separated."
+                        text: `EXTRACT RAW CABINET CODES.
+                        1. Scan the image for ALL text labels.
+                        2. FILTER: Keep ONLY Cabinet Codes (e.g., B30, W3030, SB36, DB18, RR96, TK8, CM8, BF3).
+                        3. EXCLUDE: Appliances (Ref, Range, DW), dimensions (30", 3'6"), room names, window labels (W1, W2).
+                        4. PRESERVE duplicates (if there are two B30s, list B30 twice).
+                        5. RETURN ONLY A JSON ARRAY OF STRINGS.
+                        Example: ["B30", "SB36", "W3030", "W3030", "BF3"]
+                        `
                     }
                 ]
             },
             config: { 
                 systemInstruction: SYSTEM_INSTRUCTION,
+                responseMimeType: "application/json",
                 temperature: 0.1, 
-                topP: 0.95,
-                topK: 40,
-                thinkingConfig: { thinkingBudget: 0 }
+                thinkingConfig: { thinkingBudget: 0 },
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                }
             }
         });
-        return response.text || "Could not analyze plan.";
+        
+        const rawText = response.text || "[]";
+        return JSON.parse(rawText);
     } catch (error) {
         console.error("AI Analysis Error:", error);
-        return "Error analyzing plan.";
+        return [];
     }
 }
 
+// Helper to extract specs (kept for backward compatibility or future use)
+export function extractProjectSpecs(aiText: string): Partial<ProjectSpecs> {
+    return {}; // Specs are now handled manually in the workflow
+}
+
 // Keywords that indicate an item is NOT a cabinet
-// STRICT DEALER LIST - Used to clean data before pricing
-// UPDATED: Removed 'HINGE', 'HARDWARE', 'GLIDE', 'KNOB', 'PULL' to allow hardware extraction
 const EXCLUSION_KEYWORDS = [
     'FAUCET', 'HOOD', 'RANGE', 'FRIDGE', 'REFRIGERATOR', 'DISHWASHER', 'DW', 'MW', 'MICROWAVE', 'OVEN', 'COOKTOP', 'WINE',
     'LIGHT', 'LED', 'SWITCH', 'OUTLET', 'ELECTRICAL', 'J-BOX',
@@ -66,29 +91,32 @@ const EXCLUSION_KEYWORDS = [
     'CEILING', 'ELEC', 'PLUMB'
 ];
 
-export async function suggestBOM(planDescription: string): Promise<any[]> {
-    if (!planDescription || planDescription.includes("Error")) return [];
+/**
+ * STEP 4: CATEGORIZATION
+ * Takes the Verified Raw Codes and groups them into BOM Items.
+ */
+export async function suggestBOM(rawCodes: string[]): Promise<any[]> {
+    if (!rawCodes || rawCodes.length === 0) return [];
 
     try {
         const ai = getAI();
         const response = await ai.models.generateContent({
             model: MODEL_NAME,
-            contents: `Convert the following extracted raw labels into a structured JSON Bill of Materials.
+            contents: `Perform CATEGORIZATION & GROUPING.
             
-            INPUT LABELS: "${planDescription}"
+            INPUT: ${JSON.stringify(rawCodes)}
             
             RULES:
-            1. Create a separate item for EACH occurrence in the list.
-            2. Infer the type:
-               - "Base Cabinet" (prefix B, SB, DB)
-               - "Wall Cabinet" (prefix W)
-               - "Tall Cabinet" (prefix T, U)
-               - "Hardware" (keywords Hinge, Glide, Knob, Pull)
-               - "Accessory" (Fillers, Moldings)
-            3. Store the exact code found as 'rawCode'.
-            4. Provide a brief professional description.
+            1. Normalize: Remove 'BUTT', 'L', 'R' suffixes (PB36 1TD BUTT -> PB36 1TD).
+            2. Categorize: 
+               B/SB/PB/DB -> Base
+               W/WDC -> Wall
+               RR/U/T -> Tall
+               TK/CM/BF/WF -> Accessory
+            3. Description: Generate a short standard description (e.g. "Base 30 inch").
             
-            IMPORTANT: If the label is clearly an appliance (e.g. DW, REF) ignore it.`,
+            IMPORTANT: Return JSON Array.
+            `,
             config: {
                 responseMimeType: "application/json",
                 temperature: 0.0,
@@ -171,7 +199,8 @@ export async function chatWithPricingAgent(
     currentBOM: BOMItem[],
     userMessage: string
 ): Promise<{ textResponse: string; updatedBOM: BOMItem[] }> {
-    const systemPrompt = `You are KABS Pricing Agent. Help the user adjust prices or specs.
+    const systemPrompt = `You are 1951 Cabinetry Pricing Agent.
+    Strictly follow 1951 rules.
     CONTEXT: ${JSON.stringify(currentBOM)}`;
 
     try {
@@ -193,5 +222,69 @@ export async function chatWithPricingAgent(
         return { textResponse: parsed.textResponse || "Done.", updatedBOM: newBOM };
     } catch (error) {
         return { textResponse: "Error connecting to agent.", updatedBOM: currentBOM };
+    }
+}
+
+// --- NEW FUNCTION: Design AI Layout Analysis ---
+export async function analyzeLayout(dataUrl: string, hasNKBA: boolean, userShape: KitchenShape): Promise<DesignLayout> {
+    const match = dataUrl.match(/^data:(.+);base64,(.+)$/);
+    if (!match) throw new Error("Invalid file");
+
+    const mimeType = match[1];
+    const data = match[2];
+
+    const prompt = `Analyze this floor plan measurements. The user wants to build a ${userShape} kitchen using 1951 Cabinetry standards.
+    ${hasNKBA ? 'Reference NKBA Design Standards for spacing, work triangle, and landing zones.' : ''}
+    
+    1. Confirm the Layout Strategy for a ${userShape}.
+    2. Analyze the zoning (Cooking, Cleaning, Prep).
+    3. List the Conceptual Cabinets needed to achieve this ${userShape} layout.
+       Assign 1951 standard codes (e.g. B30, SB36, W3030).
+       
+    Output JSON.`;
+
+    try {
+        const ai = getAI();
+        const response = await ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: {
+                parts: [
+                    { inlineData: { mimeType, data } },
+                    { text: prompt }
+                ]
+            },
+            config: {
+                responseMimeType: "application/json",
+                temperature: 0.2, // Slightly creative for design interpretation
+                thinkingConfig: { thinkingBudget: 0 },
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        kitchenShape: { type: Type.STRING, enum: ['L-Shape', 'U-Shape', 'Galley', 'Island', 'Single Wall'] },
+                        designNotes: { type: Type.STRING },
+                        zoningAnalysis: { type: Type.STRING },
+                        suggestedCabinets: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    sku: { type: Type.STRING },
+                                    description: { type: Type.STRING },
+                                    quantity: { type: Type.NUMBER }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        const result = JSON.parse(response.text || "{}");
+        // Force the shape to match user selection if AI drifts
+        if (result) result.kitchenShape = userShape;
+        return result;
+    } catch (error) {
+        console.error("Design AI Analysis Error", error);
+        throw error;
     }
 }

@@ -1,32 +1,38 @@
 import React, { useState } from 'react';
-import { QuoteItem, CabinetLine } from '../types';
+import { QuoteItem } from '../types';
 import { MASTER_CATALOG } from '../constants';
-import { calculateItemPrice } from '../services/pricingEngine';
-import { Trash2, AlertTriangle, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Trash2, AlertCircle } from 'lucide-react';
 
 interface BOMBuilderProps {
     items: QuoteItem[];
     lineId: string;
     onUpdateItem: (id: string, updates: Partial<QuoteItem>) => void;
     onDeleteItem: (id: string) => void;
+    // New prop for dynamic validation
+    onLookupPrice: (sku: string) => { unitPrice: number; isValid: boolean; description: string; validationMessage?: string };
 }
 
-export const BOMBuilder: React.FC<BOMBuilderProps> = ({ items, lineId, onUpdateItem, onDeleteItem }) => {
+export const BOMBuilder: React.FC<BOMBuilderProps> = ({ items, lineId, onUpdateItem, onDeleteItem, onLookupPrice }) => {
     
     const handleSkuChange = (id: string, newSku: string) => {
-        // Trigger re-price logic immediately
-        const pricing = calculateItemPrice(newSku, lineId, 1); // defaulting qty 1 for check
+        // Trigger re-price logic using passed callback
+        const pricing = onLookupPrice(newSku); 
+        
+        // Calculate new total based on current quantity
+        const currentItem = items.find(i => i.id === id);
+        const qty = currentItem ? currentItem.quantity : 1;
+
         onUpdateItem(id, { 
             sku: newSku, 
             description: pricing.description,
             unitPrice: pricing.unitPrice,
-            totalPrice: pricing.totalPrice,
+            totalPrice: pricing.unitPrice * qty,
             isValid: pricing.isValid,
             validationMessage: pricing.validationMessage
         });
     };
 
-    const handleQtyChange = (id: string, sku: string, newQty: number, currentUnitPrice: number) => {
+    const handleQtyChange = (id: string, newQty: number, currentUnitPrice: number) => {
         // Only update total, assume unit price stable unless sku changes
         onUpdateItem(id, {
             quantity: newQty,
@@ -78,7 +84,7 @@ export const BOMBuilder: React.FC<BOMBuilderProps> = ({ items, lineId, onUpdateI
 const BOMRow: React.FC<{
     item: QuoteItem;
     onSkuChange: (id: string, sku: string) => void;
-    onQtyChange: (id: string, sku: string, qty: number, price: number) => void;
+    onQtyChange: (id: string, qty: number, price: number) => void;
     onDelete: (id: string) => void;
 }> = ({ item, onSkuChange, onQtyChange, onDelete }) => {
     const [skuInput, setSkuInput] = useState(item.sku);
@@ -97,7 +103,7 @@ const BOMRow: React.FC<{
                     min="1"
                     className="w-12 border border-slate-300 rounded px-1 py-1 text-center focus:ring-2 focus:ring-brand-500 outline-none"
                     value={item.quantity}
-                    onChange={(e) => onQtyChange(item.id, item.sku, parseInt(e.target.value) || 0, item.unitPrice)}
+                    onChange={(e) => onQtyChange(item.id, parseInt(e.target.value) || 0, item.unitPrice)}
                 />
             </td>
             <td className="px-4 py-2 relative">

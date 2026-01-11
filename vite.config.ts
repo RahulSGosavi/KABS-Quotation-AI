@@ -13,10 +13,11 @@ export default defineConfig(({ mode }) => {
       emptyOutDir: true,
     },
     define: {
-      // Map process.env to VITE_ env variables for compatibility with GenAI SDK guidelines
-      'process.env.API_KEY': JSON.stringify(env.VITE_API_KEY),
-      'process.env.SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL),
-      'process.env.SUPABASE_SERVICE_KEY': JSON.stringify(env.VITE_SUPABASE_SERVICE_KEY),
+      // Map process.env to VITE_ env variables for compatibility with GenAI SDK guidelines.
+      // Default to empty string to prevent "undefined" injection if keys are missing.
+      'process.env.API_KEY': JSON.stringify(env.VITE_API_KEY || ''),
+      'process.env.SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL || ''),
+      'process.env.SUPABASE_SERVICE_KEY': JSON.stringify(env.VITE_SUPABASE_SERVICE_KEY || ''),
       // Fallback for other standard envs
       'process.env.NODE_ENV': JSON.stringify(mode),
     }

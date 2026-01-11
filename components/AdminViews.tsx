@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Lock, FileSpreadsheet, FileText, Upload, CheckCircle, AlertCircle, LogOut, Search, Plus, Info, Trash2, ArrowLeft, ChevronRight, Save, ShieldCheck, Loader2 } from 'lucide-react';
 import { CabinetLine, CatalogueFile } from '../types';
@@ -502,7 +501,7 @@ const ManufacturerDetailView = ({
                     title="Price Sheet Data"
                     description="Upload Excel/CSV to populate SKU database"
                     icon={<FileSpreadsheet className="text-green-600" size={24} />}
-                    accept=".xlsx,.csv"
+                    accept=".xlsx,.csv,.xls,.xlsm"
                     file={line.catalogExcel}
                     onUpload={(f) => handleUpload(f, 'excel')}
                     onDelete={() => onDeleteFile(line.id, 'excel')}
